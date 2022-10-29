@@ -15,115 +15,125 @@ struct TestComponent2 {
   int b;
 };
 
-TEST_CASE("Component Tests") {
-  std::unique_ptr<Component> component1 =
-      std::make_unique<ComponentData<TestComponent>>(TestComponent{1});
-  std::unique_ptr<Component> component2 =
-      std::make_unique<ComponentData<TestComponent2>>(TestComponent2{2});
-
-  SECTION("IsA returns if component is of a particular type") {
-    REQUIRE(component1->IsA<TestComponent>());
-    REQUIRE(!component1->IsA<TestComponent2>());
-  }
-
-  SECTION("GetComponentId returns unique idenifier") {
-    std::unique_ptr<Component> component3 =
-        std::make_unique<ComponentData<TestComponent>>(TestComponent{3});
-    REQUIRE(component1->GetComponentId() != component2->GetComponentId());
-    REQUIRE(component1->GetComponentId() == component3->GetComponentId());
-  }
-
-  SECTION("GetComponentData returns underlying type") {
-    REQUIRE(GetComponentData<TestComponent>(component1.get())->Get().a == 1);
-  }
-
-  SECTION("GetComponentData returns nullptr for invalid type") {
-    REQUIRE(GetComponentData<TestComponent2>(component1.get()) == nullptr);
-  }
-}
-
 TEST_CASE("Component Manager") {
-  // tests
-  //  - serialise and deserialise?
-
   ComponentManager manager;
 
-  SECTION("Get returns nullptr if component does not exist") {
-    REQUIRE(manager.Get<TestComponent>(0) == nullptr);
+  SECTION("Create returns a handle for component") {
+    REQUIRE(0 == manager.Create<TestComponent>(0, {1}).Data);
   }
 
-  SECTION("Create returns a handle for component") {
-    REQUIRE(manager.Create<TestComponent>({1}, 0) == 0);
+  SECTION("Get returns nullptr if component does not exist") {
+    auto handle = manager.Create<TestComponent>(99, {1});
+    REQUIRE(nullptr == manager.Get<TestComponent>(
+                           {typeid(TestComponent).hash_code(), 99}));
   }
 
   SECTION("Get returns component from handle") {
-    auto handle = manager.Create<TestComponent>({1}, 0);
-    REQUIRE(manager.Get<TestComponent>(handle)->a == 1);
+    auto handle = manager.Create<TestComponent>(99, {1});
+    REQUIRE(1 == manager.Get<TestComponent>(handle)->a);
   }
 
   SECTION("Can add multiple of the same component") {
-    auto handle = manager.Create<TestComponent>({1}, 0);
-    manager.Create<TestComponent>({2}, 1);
-    REQUIRE(manager.Get<TestComponent>(handle)->a == 1);
+    auto handle = manager.Create<TestComponent>(99, {1});
+    manager.Create<TestComponent>(88, {2});
+    REQUIRE(1 == manager.Get<TestComponent>(handle)->a);
   }
 
   SECTION("Can add different component types") {
-    auto handle1 = manager.Create<TestComponent>({1}, 0);
-    auto handle2 = manager.Create<TestComponent2>({2}, 0);
-    REQUIRE(manager.Get<TestComponent>(handle1)->a == 1);
-    REQUIRE(manager.Get<TestComponent2>(handle2)->b == 2);
+    auto handle1 = manager.Create<TestComponent>(99, {1});
+    auto handle2 = manager.Create<TestComponent2>(99, {2});
+    REQUIRE(1 == manager.Get<TestComponent>(handle1)->a);
+    REQUIRE(2 == manager.Get<TestComponent2>(handle2)->b);
   }
 
-  SECTION("Can get component for particular entity") {
-    manager.Create<TestComponent>({1}, 0);
-    REQUIRE(manager.GetByEntity<TestComponent>(0)->a == 1);
-  }
-
-  SECTION("Get component by entity returns nullptr if doesn't exist") {
-    REQUIRE(manager.GetByEntity<TestComponent>(0) == nullptr);
+  SECTION("Can modify component by handle") {
+    auto handle = manager.Create<TestComponent>(99, {1});
+    manager.Set<TestComponent>(handle, {5});
+    REQUIRE(5 == manager.Get<TestComponent>(handle)->a);
   }
 
   SECTION("Can remove component") {
-    auto handle = manager.Create<TestComponent>({1}, 0);
-    manager.Remove<TestComponent>(handle);
-    REQUIRE(manager.Get<TestComponent>(handle) == nullptr);
+    auto handle = manager.Create<TestComponent>(99, {1});
+    manager.Remove(handle);
+    REQUIRE(nullptr == manager.Get<TestComponent>(handle));
   }
 
-  SECTION("Create for same entity removes old entity") {
-    auto handle = manager.Create<TestComponent>({1}, 0);
-    manager.Create<TestComponent>({2}, 0);
-    REQUIRE(manager.Get<TestComponent>(handle) == nullptr);
+  SECTION("Create for same entity removes old component") {
+    auto handle = manager.Create<TestComponent>(99, {1});
+    manager.Create<TestComponent>(99, {2});
+    REQUIRE(nullptr == manager.Get<TestComponent>(handle));
   }
 
-  SECTION("Can run a function over a components of a type") {
-    manager.Create<TestComponent>({1}, 0);
-    manager.ForEach<TestComponent>(
-        [&](TestComponent* component) { REQUIRE(component->a == 1); });
+  SECTION("Can get all entitys with a component") {
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1});
+    REQUIRE(std::unordered_set<ComponentManager::EntityId>{88, 99} ==
+            manager.GetEntitiesWithSharedComponents<TestComponent>());
+  }
+
+  SECTION("Can get all entitys with multiple components") {
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1});
+    manager.Create<TestComponent2>(88, {1});
+    manager.Create<TestComponent2>(99, {1});
+    REQUIRE(
+        std::unordered_set<ComponentManager::EntityId>{88, 99} ==
+        manager
+            .GetEntitiesWithSharedComponents<TestComponent, TestComponent2>());
+  }
+
+  SECTION("Only gets entities that have all components") {
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1});
+    manager.Create<TestComponent2>(88, {1});
+    REQUIRE(
+        std::unordered_set<ComponentManager::EntityId>{88} ==
+        manager
+            .GetEntitiesWithSharedComponents<TestComponent, TestComponent2>());
   }
 
   SECTION("Can run a function over multiple components of a type") {
-    manager.Create<TestComponent>({1}, 0);
-    manager.Create<TestComponent>({2}, 1);
-    auto i = 1;
-    manager.ForEach<TestComponent>([&](TestComponent*) { i++; });
-    REQUIRE(i == 3);
-  }
-
-  SECTION("Can run a function over multiple components types") {
-    manager.Create<TestComponent>({1}, 0);
-    manager.Create<TestComponent2>({1}, 0);
-    auto i = 1;
-    manager.ForEach<TestComponent, TestComponent2>(
-        [&](TestComponent*, TestComponent2*) { i++; });
-    REQUIRE(i == 2);
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {2});
+    auto i = 0;
+    manager.ForEach<TestComponent>(
+        [&](ComponentManager::EntityId const entityId, TestComponent const*) {
+          REQUIRE(std::vector<int>{88, 99}[i++] == entityId);
+        });
   }
 
   SECTION("Only runs over entities that contain all components") {
-    manager.Create<TestComponent>({1}, 0);
-    manager.Create<TestComponent2>({1}, 1);
-    auto i = 1;
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1});
+    manager.Create<TestComponent2>(88, {1});
     manager.ForEach<TestComponent, TestComponent2>(
-        [&](TestComponent*, TestComponent2*) { i++; });
-    REQUIRE(i == 1);
+        [&](ComponentManager::EntityId const entityId, TestComponent const*,
+            TestComponent2 const*) { REQUIRE(88 == entityId); });
+  }
+
+  SECTION("Get component by entity returns replaced component") {
+    manager.Create<TestComponent>(99, {1});
+    manager.Create<TestComponent>(99, {5});
+    manager.ForEach<TestComponent>(
+        [&](ComponentManager::EntityId const, TestComponent const* data) {
+          REQUIRE(5 == data->a);
+        });
+  }
+
+  SECTION("Can disable an entity") {
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1});
+    manager.SetEntityEnabled(99, false);
+    REQUIRE(std::unordered_set<ComponentManager::EntityId>{88} ==
+            manager.GetEntitiesWithSharedComponents<TestComponent>());
+  }
+
+  SECTION("Can disable an entity") {
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1});
+    manager.SetEntityEnabled(99, false);
+    manager.SetEntityEnabled(99, true);
+    REQUIRE(std::unordered_set<ComponentManager::EntityId>{88, 99} ==
+            manager.GetEntitiesWithSharedComponents<TestComponent>());
   }
 }
