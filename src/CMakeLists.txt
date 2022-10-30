@@ -1,5 +1,5 @@
 add_library(CrystalEntityLib
-  entity.cpp
+  manager.cpp
 )
 
 set_target_properties(CrystalEntityLib

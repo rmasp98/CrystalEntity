@@ -3,10 +3,7 @@
 
 #include "catch2/catch_test_macros.hpp"
 #include "component.hpp"
-
-struct TestComponent {
-  int a;
-};
+#include "data.hpp"
 
 TEST_CASE("Entity Tests") {
   auto componentManager = std::make_shared<ComponentManager>();
@@ -28,13 +25,18 @@ TEST_CASE("Entity Tests") {
 
   SECTION("Can add a component to entity") {
     entity.AddComponent<TestComponent>({1});
-    REQUIRE(1 == entity.GetComponent<TestComponent>()->a);
+    REQUIRE(1 == entity.GetComponent<TestComponent>().lock()->a);
   }
 
   SECTION("Can replace a component to entity") {
     entity.AddComponent<TestComponent>({1});
-    entity.SetComponent<TestComponent>({5});
-    REQUIRE(5 == entity.GetComponent<TestComponent>()->a);
+    entity.AddComponent<TestComponent>({5});
+    REQUIRE(5 == entity.GetComponent<TestComponent>().lock()->a);
+  }
+
+  SECTION("Has component return true if does have component") {
+    entity.AddComponent<TestComponent>({1});
+    REQUIRE(true == entity.HasComponent<TestComponent>());
   }
 
   SECTION("Can remove a component from an entity") {
@@ -43,9 +45,12 @@ TEST_CASE("Entity Tests") {
     REQUIRE(false == entity.HasComponent<TestComponent>());
   }
 
-  SECTION("Has component return true if does have component") {
+  SECTION("Can remove all components from an entity") {
     entity.AddComponent<TestComponent>({1});
-    REQUIRE(true == entity.HasComponent<TestComponent>());
+    entity.AddComponent<TestComponent2>({2});
+    entity.RemoveAllComponents();
+    REQUIRE(false == entity.HasComponent<TestComponent>());
+    REQUIRE(false == entity.HasComponent<TestComponent2>());
   }
 
   SECTION("Disabling entity disables in component manager") {
@@ -63,5 +68,19 @@ TEST_CASE("Entity Tests") {
     REQUIRE(entity.GetIsEnabled() == true);
     REQUIRE(std::unordered_set<ComponentManager::EntityId>{entity.GetId()} ==
             componentManager->GetEntitiesWithSharedComponents<TestComponent>());
+  }
+
+  SECTION("Invalidating entity removes all components") {
+    entity.AddComponent<TestComponent>({1});
+    entity.AddComponent<TestComponent2>({2});
+    entity.Invalidate();
+    REQUIRE(false == entity.HasComponent<TestComponent>());
+    REQUIRE(false == entity.HasComponent<TestComponent2>());
+  }
+
+  SECTION("Invalidating entity prevents adding more components") {
+    entity.Invalidate();
+    entity.AddComponent<TestComponent>({1});
+    REQUIRE(false == entity.HasComponent<TestComponent>());
   }
 }

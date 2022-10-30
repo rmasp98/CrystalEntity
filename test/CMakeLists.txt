@@ -9,6 +9,7 @@ add_executable(CrystalEntityTest
   entity_test.cpp
   component_test.cpp
   pool_test.cpp
+  manager_test.cpp
 )
 
 set_target_properties(CrystalEntityTest

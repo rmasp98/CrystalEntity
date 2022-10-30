@@ -1,9 +1,6 @@
 #pragma once
 
-#include <stdint.h>
-
 #include <algorithm>
-#include <functional>
 #include <memory>
 #include <typeinfo>
 #include <unordered_map>
@@ -24,9 +21,14 @@ class ComponentManager {
   };
 
   struct Mappings {
-    std::unique_ptr<Pool> ComponentPool;
+    std::shared_ptr<Pool> ComponentPool;
     std::unordered_map<EntityId, DataId> EntityMap;
     std::unordered_map<EntityId, DataId> DisabledEntityMap;
+
+    template <typename ComponentType>
+    std::shared_ptr<PoolImpl<ComponentType>> GetPool() {
+      return std::dynamic_pointer_cast<PoolImpl<ComponentType>>(ComponentPool);
+    }
   };
 
   template <typename ComponentType>
@@ -40,9 +42,9 @@ class ComponentManager {
 
   template <typename ComponentType>
   Handle Create(EntityId const entityId, ComponentType&& data) {
-    auto& mappings = GetOrCreateMappings<ComponentType>();
-    auto dataId =
-        mappings.ComponentPool->Add(std::forward<ComponentType>(data));
+    Mappings& mappings = GetOrCreateMappings<ComponentType>();
+    auto dataId = mappings.GetPool<ComponentType>()->Add(
+        std::forward<ComponentType>(data));
 
     if (mappings.EntityMap.contains(entityId)) {
       Remove({GetTypeId<ComponentType>(), mappings.EntityMap.at(entityId)});
@@ -53,29 +55,37 @@ class ComponentManager {
   }
 
   template <typename ComponentType>
-  ComponentType const* Get(Handle const& handle) const {
-    assert(GetTypeId<ComponentType>() == handle.Type &&
-           PoolExists(handle.Type));
-
-    auto const& mappings = GetMappings(handle.Type);
-    return mappings.ComponentPool->Get<ComponentType>(handle.Data);
-  }
-
-  template <typename ComponentType>
-  void Set(Handle const handle, ComponentType&& data) {
+  std::weak_ptr<ComponentType> Get(Handle const& handle) {
     assert(GetTypeId<ComponentType>() == handle.Type &&
            PoolExists(handle.Type));
 
     auto& mappings = GetMappings(handle.Type);
-    mappings.ComponentPool->Set<ComponentType>(
-        handle.Data, std::forward<ComponentType>(data));
+    return mappings.GetPool<ComponentType>()->Get(handle.Data);
+  }
+
+  template <typename ComponentType>
+  std::weak_ptr<ComponentType> GetByEntity(EntityId const entityId) {
+    if (PoolExists(GetTypeId<ComponentType>())) {
+      Mappings& mappings = GetMappings<ComponentType>();
+      if (mappings.EntityMap.contains(entityId)) {
+        auto dataId = mappings.EntityMap.at(entityId);
+        return mappings.GetPool<ComponentType>()->Get(dataId);
+      }
+    }
+    // TODO: log in else that pool doesn't exist
+    return {};
   }
 
   void Remove(Handle const& handle) {
     if (PoolExists(handle.Type)) {
       auto& mappings = componentPools_.at(handle.Type);
       mappings.ComponentPool->Remove(handle.Data);
+
       std::erase_if(mappings.EntityMap, [&](auto const& item) {
+        return item.second == handle.Data;
+      });
+
+      std::erase_if(mappings.DisabledEntityMap, [&](auto const& item) {
         return item.second == handle.Data;
       });
     }
@@ -83,6 +93,7 @@ class ComponentManager {
   }
 
   void SetEntityEnabled(EntityId const entityId, bool const isEnabled) {
+    // TODO: have to if every iteration, maybe improve
     for (auto& [_, pool] : componentPools_) {
       if (isEnabled && pool.DisabledEntityMap.contains(entityId)) {
         auto const dataId = pool.DisabledEntityMap[entityId];
@@ -97,49 +108,27 @@ class ComponentManager {
   }
 
   template <typename... Args>
-  std::unordered_set<EntityId> GetEntitiesWithSharedComponents() {
-    return SetIntersection(GetComponentEntities<Args>()...);
-  }
-
-  // TODO: figure out how this works and if there is a simpler way
-  template <typename T>
-  struct identity {
-    typedef T type;
-  };
-
-  template <typename... Args>
-  void ForEach(
-      typename identity<
-          std::function<void(EntityId const, Args const*...)>>::type func) {
-    static_assert(sizeof...(Args) > 0);
-    for (auto entityId : GetEntitiesWithSharedComponents<Args...>()) {
-      auto out = std::make_tuple(entityId, GetByEntity<Args>(entityId)...);
-      std::apply(func, out);
-    }
+  std::unordered_set<EntityId> GetEntitiesWithSharedComponents(
+      bool const ignoreDisabled = true) const {
+    return SetIntersection(GetComponentEntities<Args>(ignoreDisabled)...);
   }
 
  protected:
-  template <typename ComponentType>
-  ComponentType const* GetByEntity(EntityId const entityId) const {
-    if (PoolExists(GetTypeId<ComponentType>())) {
-      Mappings const& mappings = GetMappings<ComponentType>();
-      if (mappings.EntityMap.contains(entityId)) {
-        auto dataId = mappings.EntityMap.at(entityId);
-        return mappings.ComponentPool->Get<ComponentType>(dataId);
-      }
-    }
-    // TODO: log in else that pool doesn't exist
-    return nullptr;
-  }
-
   // TODO: probably a more efficient way of doing this
   template <typename ComponentType>
-  std::unordered_set<EntityId> GetComponentEntities() const {
+  std::unordered_set<EntityId> GetComponentEntities(
+      bool const ignoreDisabled) const {
     auto const& mappings = GetMappings<ComponentType>();
 
     std::unordered_set<EntityId> entities;
     for (auto& [entity, _] : mappings.EntityMap) {
       entities.insert(entity);
+    }
+
+    if (!ignoreDisabled) {
+      for (auto& [entity, _] : mappings.DisabledEntityMap) {
+        entities.insert(entity);
+      }
     }
 
     return entities;
@@ -166,7 +155,7 @@ class ComponentManager {
     if (!componentPools_.contains(typeId)) {
       // TODO: can this ever fail?
       componentPools_.insert(
-          {typeId, Mappings{std::make_unique<PoolImpl<ComponentType>>(), {}}});
+          {typeId, Mappings{std::make_shared<PoolImpl<ComponentType>>(), {}}});
     }
 
     return GetMappings(typeId);

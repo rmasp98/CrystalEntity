@@ -6,17 +6,24 @@
 #include "component.hpp"
 
 class Entity {
+  using ComponentMap =
+      std::unordered_map<ComponentManager::TypeId, ComponentManager::Handle>;
+
  public:
-  using EntityId = ComponentManager::EntityId;
+  using Id = ComponentManager::EntityId;
 
   explicit Entity(std::shared_ptr<ComponentManager> const& componentManager)
       : entityId_(entityIdCounter_++), componentManager_(componentManager) {}
+
+  // Can't be copied (it will break isValid and isEnabled)
+  Entity(Entity const&) = delete;
+  Entity& operator=(Entity const&) = delete;
 
   auto operator<=>(Entity const& rhs) const {
     return entityId_ <=> rhs.entityId_;
   }
 
-  EntityId GetId() const { return entityId_; }
+  Id GetId() const { return entityId_; }
 
   template <typename ComponentType>
   bool HasComponent() const {
@@ -24,23 +31,19 @@ class Entity {
   }
 
   template <typename ComponentType>
-  void AddComponent(ComponentType&& component) {
-    auto handle = componentManager_->Create<ComponentType>(
-        entityId_, std::forward<ComponentType>(component));
-    components_.insert({ComponentManager::GetTypeId<ComponentType>(), handle});
-  }
-
-  template <typename ComponentType>
-  ComponentType const* GetComponent() const {
+  std::weak_ptr<ComponentType> GetComponent() const {
     auto& handle = GetComponentHandle<ComponentType>();
     return componentManager_->Get<ComponentType>(handle);
   }
 
   template <typename ComponentType>
-  void SetComponent(ComponentType&& component) {
-    auto& handle = GetComponentHandle<ComponentType>();
-    componentManager_->Set<ComponentType>(
-        handle, std::forward<ComponentType>(component));
+  void AddComponent(ComponentType&& component) {
+    if (IsValid()) {
+      auto handle = componentManager_->Create<ComponentType>(
+          entityId_, std::forward<ComponentType>(component));
+      components_.insert_or_assign(ComponentManager::GetTypeId<ComponentType>(),
+                                   handle);
+    }
   }
 
   template <typename ComponentType>
@@ -50,12 +53,26 @@ class Entity {
     components_.erase(ComponentManager::GetTypeId<ComponentType>());
   }
 
+  void RemoveAllComponents() {
+    for (auto const& [_, handle] : components_) {
+      componentManager_->Remove(handle);
+    }
+    components_.clear();
+  }
+
   void SetIsEnabled(bool const isEnabled) {
     isEnabled_ = isEnabled;
     componentManager_->SetEntityEnabled(entityId_, isEnabled);
   }
 
   bool GetIsEnabled() const { return isEnabled_; }
+
+  void Invalidate() {
+    isValid_ = false;
+    RemoveAllComponents();
+  }
+
+  bool IsValid() const { return isValid_; }
 
  protected:
   template <typename ComponentType>
@@ -65,10 +82,11 @@ class Entity {
   }
 
  private:
-  inline static std::atomic<EntityId> entityIdCounter_;
-  EntityId entityId_;
-  bool isEnabled_;
-  std::unordered_map<ComponentManager::TypeId, ComponentManager::Handle>
-      components_;
+  Id entityId_;
+  bool isEnabled_ = true;
+  bool isValid_ = true;
+  ComponentMap components_;
+
+  inline static std::atomic<Entity::Id> entityIdCounter_ = 0;
   std::shared_ptr<ComponentManager> componentManager_;
 };
