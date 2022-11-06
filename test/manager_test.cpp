@@ -1,28 +1,40 @@
 
 #include "manager.hpp"
 
+#include <cstdlib>
+
 #include "catch2/catch_test_macros.hpp"
 #include "data.hpp"
 
 TEST_CASE("Manager tests") {
   Manager manager;
 
-  SECTION("Can get entity") {
-    auto entity = manager.CreateEntity();
-    REQUIRE(manager.GetEntity(entity.lock()->GetId()).lock() == entity.lock());
-  }
+  SECTION("Manager entity tests") {
+    SECTION("Can get entity") {
+      auto entity = manager.CreateEntity();
+      REQUIRE(manager.GetEntity(entity.lock()->GetId()).lock() ==
+              entity.lock());
+    }
 
-  SECTION("Can destroy an entity") {
-    auto id = manager.CreateEntity().lock()->GetId();
-    manager.DestroyEntity(id);
-    REQUIRE(manager.GetEntity(id).expired());
-  }
+    SECTION("Can destroy an entity") {
+      auto id = manager.CreateEntity().lock()->GetId();
+      manager.DestroyEntity(id);
+      REQUIRE(manager.GetEntity(id).expired());
+    }
 
-  SECTION("Destroying an entity removes all components") {
-    auto entity = manager.CreateEntity().lock();
-    entity->AddComponent<TestComponent>({1});
-    manager.DestroyEntity(entity->GetId());
-    REQUIRE(!entity->HasComponent<TestComponent>());
+    SECTION("Destroying an entity removes all components") {
+      auto entity = manager.CreateEntity().lock();
+      entity->AddComponent<TestComponent>({1});
+      manager.DestroyEntity(entity->GetId());
+      REQUIRE(!entity->HasComponent<TestComponent>());
+    }
+
+    SECTION("Invalidating entity removes from manager") {
+      auto entity = manager.CreateEntity();
+      auto id = entity.lock()->GetId();
+      entity.lock()->Invalidate();
+      REQUIRE(manager.GetEntity(id).expired());
+    }
   }
 
   SECTION("Manager foreach tests") {
@@ -77,31 +89,102 @@ TEST_CASE("Manager tests") {
     }
   }
 
-  // TODO: plan the system stuff out a bit more before writing...
-  SECTION("Can add a system and initialise is called") {
-    int i = 0;
-    auto system = std::make_unique<TestSystem>(i);
-    manager.AddSystem(std::move(system));
-    REQUIRE(1 == i);
+  SECTION("Manager system tests") {
+    SECTION("Add a system returns SystemId") {
+      auto id = manager.AddSystem<TestSystem>(nullptr, nullptr, nullptr);
+      REQUIRE(System::GetId<TestSystem>() == id);
+    }
+
+    SECTION("Can tick a particular system") {
+      SystemState state = SystemState::None;
+      manager.AddSystem<TestSystem>(&state, nullptr, nullptr);
+      REQUIRE(SystemState::Initialised == state);
+      manager.Tick<TestSystem>(60.0f);
+      REQUIRE(SystemState::Ticked == state);
+    }
+
+    std::vector<System::Id> executionOrder;
+    SystemState state1 = SystemState::None;
+    auto id = manager.AddSystem<TestSystem>(&state1, nullptr, &executionOrder);
+
+    SECTION("Can remove system from manager") {
+      manager.RemoveSystem<TestSystem>();
+      manager.Tick<TestSystem>(60.0f);
+      REQUIRE(SystemState::Initialised == state1);
+    }
+
+    SECTION("Can remove system from manager by id") {
+      manager.RemoveSystem(id);
+      manager.Tick<TestSystem>(60.0f);
+      REQUIRE(SystemState::Initialised == state1);
+    }
+
+    SystemState state2 = SystemState::None;
+    auto id2 = manager.AddSystem<TestSystem2>(&state2, &executionOrder);
+
+    SECTION("Can tick over all systems") {
+      manager.Tick(60.0f);
+      REQUIRE(SystemState::Ticked == state1);
+      REQUIRE(SystemState::Ticked == state2);
+    }
+
+    SECTION("Can define the order in which the systems are executed") {
+      std::vector<System::Id> order{id2, id};
+      manager.SetSystemOrder(order);
+      manager.Tick(60.0f);
+      REQUIRE(order == executionOrder);
+    }
+
+    SECTION("Returns false and does nothing if order contains invalid id") {
+      std::vector<System::Id> order{id, 99};
+      REQUIRE(false == manager.SetSystemOrder(order));
+      REQUIRE(manager.GetSystemOrder() != order);
+    }
+
+    SECTION("Removing system removes from order list") {
+      manager.RemoveSystem(id);
+      REQUIRE(std::vector<System::Id>{id2} == manager.GetSystemOrder());
+    }
+
+    SECTION("Adding same system multiple times doesn't add multiple to order") {
+      std::vector<System::Id> order{id, id2};
+      manager.SetSystemOrder(order);
+      manager.AddSystem<TestSystem>(nullptr, nullptr, nullptr);
+      manager.Tick(60.0f);
+      REQUIRE(order == executionOrder);
+    }
   }
 
-  SECTION("Can tick over a system") {
-    int i = 0;
-    auto system = std::make_unique<TestSystem>(i);
-    auto id = manager.AddSystem(std::move(system));
-    manager.Tick(id, 2.0f);
-    REQUIRE(2 == i);
-  }
+  SECTION("Manager Event tests") {
+    EventState eventState = EventState::None;
+    manager.AddSystem<TestSystem>(nullptr, &eventState, nullptr);
 
-  SECTION("Can tick over all systems") {
-    int i = 0;
-    int j = 0;
-    auto system1 = std::make_unique<TestSystem>(i);
-    auto system2 = std::make_unique<TestSystem>(j);
-    manager.AddSystem(std::move(system1));
-    manager.AddSystem(std::move(system2));
-    manager.Tick(2.0f);
-    REQUIRE(2 == i);
-    REQUIRE(2 == j);
+    SECTION("System can subscribe to entity creation event") {
+      manager.CreateEntity();
+      REQUIRE(EventState::EntityCreated == eventState);
+    }
+
+    SECTION("System can subscribe to entity destruction event") {
+      auto entity = manager.CreateEntity();
+      manager.DestroyEntity(entity.lock()->GetId());
+      REQUIRE(EventState::EntityDestroyed == eventState);
+    }
+
+    SECTION("System can subscribe to component add event") {
+      auto entity = manager.CreateEntity();
+      if (auto e = entity.lock()) {
+        e->AddComponent<TestComponent>({1});
+      }
+      REQUIRE(EventState::ComponentAssigned == eventState);
+    }
+
+    SECTION("System can subscribe to component add event") {
+      auto entity = manager.CreateEntity();
+      if (auto e = entity.lock()) {
+        e->AddComponent<TestComponent>({1});
+        e->RemoveComponent<TestComponent>();
+      }
+      REQUIRE(EventState::ComponentRemoved == eventState);
+    }
   }
 }

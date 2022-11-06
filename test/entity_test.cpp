@@ -4,15 +4,17 @@
 #include "catch2/catch_test_macros.hpp"
 #include "component.hpp"
 #include "data.hpp"
+#include "events.hpp"
 
 TEST_CASE("Entity Tests") {
   auto componentManager = std::make_shared<ComponentManager>();
-  Entity entity(componentManager);
+  auto invalidationEvent = std::make_shared<Event<Entity::Id>>();
+  Entity entity(invalidationEvent, componentManager);
 
   SECTION("Get entity id") { REQUIRE(0 == entity.GetId()); }
 
   SECTION("Entity id iterates for each entity") {
-    Entity entity2(componentManager);
+    Entity entity2(invalidationEvent, componentManager);
     // This does start at 0 because entity has been constructed already in
     // previous test
     REQUIRE(1 == entity.GetId());
@@ -70,17 +72,33 @@ TEST_CASE("Entity Tests") {
             componentManager->GetEntitiesWithSharedComponents<TestComponent>());
   }
 
-  SECTION("Invalidating entity removes all components") {
+  SECTION("Adding components to disabled entity are also disabled") {
+    entity.SetIsEnabled(false);
     entity.AddComponent<TestComponent>({1});
-    entity.AddComponent<TestComponent2>({2});
-    entity.Invalidate();
-    REQUIRE(false == entity.HasComponent<TestComponent>());
-    REQUIRE(false == entity.HasComponent<TestComponent2>());
+    REQUIRE(
+        componentManager->GetByEntity<TestComponent>(entity.GetId()).expired());
+    REQUIRE(!componentManager->GetByEntity<TestComponent>(entity.GetId(), false)
+                 .expired());
   }
 
   SECTION("Invalidating entity prevents adding more components") {
     entity.Invalidate();
     entity.AddComponent<TestComponent>({1});
     REQUIRE(false == entity.HasComponent<TestComponent>());
+  }
+
+  SECTION("Invalidating entity removes all components") {
+    entity.AddComponent<TestComponent>({1});
+    entity.Invalidate();
+    REQUIRE(false == entity.HasComponent<TestComponent>());
+  }
+
+  SECTION("Can subscribe to an invalidation event") {
+    Entity::Id i = 0;
+    auto observer =
+        invalidationEvent->Subscribe([&](Entity::Id const id) { i = id; });
+    entity.Invalidate();
+    observer->Unsubscribe();
+    REQUIRE(entity.GetId() == i);
   }
 }

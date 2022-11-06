@@ -1,3 +1,9 @@
+FetchContent_Declare(
+    AsyncLib
+  GIT_REPOSITORY https://github.com/rmasp98/AsyncLib.git
+)
+FetchContent_MakeAvailable(AsyncLib)
+
 add_library(CrystalEntityLib
   manager.cpp
 )
@@ -15,3 +21,4 @@ target_include_directories(CrystalEntityLib
         $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
         ${PROJECT_SOURCE_DIR}/src
 )
+target_link_libraries(CrystalEntityLib AsyncLib)

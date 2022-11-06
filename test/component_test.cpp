@@ -92,12 +92,19 @@ TEST_CASE("Component Manager") {
             manager.GetEntitiesWithSharedComponents<TestComponent>());
   }
 
-  SECTION("Can disable an entity") {
+  SECTION("Can reenable an entity") {
     manager.Create<TestComponent>(88, {1});
     manager.Create<TestComponent>(99, {1});
     manager.SetEntityEnabled(99, false);
     manager.SetEntityEnabled(99, true);
     REQUIRE(std::unordered_set<ComponentManager::EntityId>{88, 99} ==
+            manager.GetEntitiesWithSharedComponents<TestComponent>());
+  }
+
+  SECTION("Disabled entities can add components directly to disabled list") {
+    manager.Create<TestComponent>(88, {1});
+    manager.Create<TestComponent>(99, {1}, false);
+    REQUIRE(std::unordered_set<ComponentManager::EntityId>{88} ==
             manager.GetEntitiesWithSharedComponents<TestComponent>());
   }
 
@@ -119,5 +126,41 @@ TEST_CASE("Component Manager") {
     manager.Remove(handle);
     manager.SetEntityEnabled(99, true);
     REQUIRE(manager.GetEntitiesWithSharedComponents<TestComponent>().empty());
+  }
+
+  auto componentAddEvent =
+      EventManager::CreateSystemEvent<Entity::Id, ComponentManager::Handle>();
+  auto componentRemoveEvent =
+      EventManager::CreateSystemEvent<Entity::Id, ComponentManager::Handle>();
+  manager.SetSystemEvents(componentAddEvent, componentRemoveEvent);
+
+  SECTION("Can subscribe to component creation events") {
+    int i = 0;
+    auto observer = componentAddEvent->Subscribe(
+        [&](Entity::Id id, ComponentManager::Handle) { i = id; });
+    manager.Create<TestComponent>(99, {1});
+    observer->Unsubscribe();
+    REQUIRE(99 == i);
+  }
+
+  SECTION("Can subscribe to component removal events") {
+    auto handle = manager.Create<TestComponent>(99, {1});
+    int i = 0;
+    auto observer = componentRemoveEvent->Subscribe(
+        [&](Entity::Id id, ComponentManager::Handle) { i = id; });
+    manager.Remove(handle);
+    observer->Unsubscribe();
+    REQUIRE(99 == i);
+  }
+
+  SECTION("Can subscribe to disabled component removal events") {
+    auto handle = manager.Create<TestComponent>(99, {1});
+    manager.SetEntityEnabled(99, false);
+    int i = 0;
+    auto observer = componentRemoveEvent->Subscribe(
+        [&](Entity::Id id, ComponentManager::Handle) { i = id; });
+    manager.Remove(handle);
+    observer->Unsubscribe();
+    REQUIRE(99 == i);
   }
 }

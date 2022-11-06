@@ -3,17 +3,19 @@
 #include <atomic>
 #include <unordered_set>
 
+#include "AsyncLib/observer.hpp"
 #include "component.hpp"
 
 class Entity {
-  using ComponentMap =
-      std::unordered_map<ComponentManager::TypeId, ComponentManager::Handle>;
-
  public:
   using Id = ComponentManager::EntityId;
 
-  explicit Entity(std::shared_ptr<ComponentManager> const& componentManager)
-      : entityId_(entityIdCounter_++), componentManager_(componentManager) {}
+  explicit Entity(
+      std::shared_ptr<async_lib::Subject<Entity::Id>> invalidationSubject,
+      std::shared_ptr<ComponentManager> const& componentManager)
+      : entityId_(entityIdCounter_++),
+        componentManager_(componentManager),
+        invalidationSubject_(invalidationSubject) {}
 
   // Can't be copied (it will break isValid and isEnabled)
   Entity(Entity const&) = delete;
@@ -40,7 +42,7 @@ class Entity {
   void AddComponent(ComponentType&& component) {
     if (IsValid()) {
       auto handle = componentManager_->Create<ComponentType>(
-          entityId_, std::forward<ComponentType>(component));
+          entityId_, std::forward<ComponentType>(component), isEnabled_);
       components_.insert_or_assign(ComponentManager::GetTypeId<ComponentType>(),
                                    handle);
     }
@@ -70,6 +72,7 @@ class Entity {
   void Invalidate() {
     isValid_ = false;
     RemoveAllComponents();
+    if (invalidationSubject_) invalidationSubject_->Notify(entityId_);
   }
 
   bool IsValid() const { return isValid_; }
@@ -82,11 +85,14 @@ class Entity {
   }
 
  private:
-  Id entityId_;
-  bool isEnabled_ = true;
-  bool isValid_ = true;
-  ComponentMap components_;
+  Id const entityId_;
+  std::atomic<bool> isEnabled_ = true;
+  std::atomic<bool> isValid_ = true;
+  // TODO: replace with thread safe map
+  std::unordered_map<ComponentManager::TypeId, ComponentManager::Handle>
+      components_;
 
   inline static std::atomic<Entity::Id> entityIdCounter_ = 0;
   std::shared_ptr<ComponentManager> componentManager_;
+  std::shared_ptr<async_lib::Subject<Entity::Id>> invalidationSubject_;
 };

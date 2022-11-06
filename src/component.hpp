@@ -4,8 +4,10 @@
 #include <memory>
 #include <typeinfo>
 #include <unordered_map>
+#include <utility>
 
-#include "pool.hpp"
+#include "AsyncLib/pool.hpp"
+#include "events.hpp"
 
 class ComponentManager {
   using DataId = int64_t;
@@ -20,16 +22,118 @@ class ComponentManager {
     DataId Data;
   };
 
+ protected:
+  class EntityMappings {
+   public:
+    void Set(EntityId const entityId, DataId const dataId, bool isEnabled) {
+      if (isEnabled) {
+        enabledEntityMap_.insert({entityId, dataId});
+      } else {
+        disabledEntityMap_.insert({entityId, dataId});
+      }
+    }
+
+    DataId GetData(EntityId const entityId,
+                   bool const ignoreDisabled = true) const {
+      if (Contains(entityId)) {
+        return enabledEntityMap_.at(entityId);
+      } else if (!ignoreDisabled && Contains(entityId, false)) {
+        return disabledEntityMap_.at(entityId);
+      }
+      // TODO: maybe throw excption
+      return {~0};
+    }
+
+    EntityId GetEntity(DataId const dataId,
+                       bool const ignoreDisabled = true) const {
+      if (auto const entityIdPtr = GetEntity(dataId, enabledEntityMap_)) {
+        return *entityIdPtr;
+      } else if (!ignoreDisabled) {
+        if (auto const entityIdPtr = GetEntity(dataId, disabledEntityMap_)) {
+          return *entityIdPtr;
+        }
+      }
+      // TODO: maybe throw excption
+      return {~0};
+    }
+
+    std::unordered_set<EntityId> GetAllEntities(
+        bool const ignoreDisabled = true) const {
+      std::unordered_set<EntityId> entities;
+      for (auto const& [entityId, _] : enabledEntityMap_) {
+        entities.insert(entityId);
+      }
+
+      if (!ignoreDisabled) {
+        for (auto& [entityId, _] : disabledEntityMap_) {
+          entities.insert(entityId);
+        }
+      }
+
+      return entities;
+    }
+
+    bool Contains(EntityId const entityId, bool ignoreDisabled = true) const {
+      return enabledEntityMap_.contains(entityId) ||
+             (!ignoreDisabled && disabledEntityMap_.contains(entityId));
+    }
+
+    void SetIsEnabled(EntityId const entityId, bool isEnabled) {
+      if (Contains(entityId, false)) {
+        auto dataId = GetData(entityId, false);
+        Remove(entityId);
+        Set(entityId, dataId, isEnabled);
+      }
+    }
+
+    void Remove(EntityId const entityId) {
+      enabledEntityMap_.erase(entityId);
+      disabledEntityMap_.erase(entityId);
+    }
+
+    void Remove(DataId const dataId) {
+      std::erase_if(enabledEntityMap_,
+                    [&](auto const& item) { return item.second == dataId; });
+      std::erase_if(disabledEntityMap_,
+                    [&](auto const& item) { return item.second == dataId; });
+    }
+
+   protected:
+    EntityId const* GetEntity(
+        DataId const dataId,
+        std::unordered_map<EntityId, DataId> const& map) const {
+      auto it = std::find_if(map.begin(), map.end(), [&](auto const& item) {
+        return item.second == dataId;
+      });
+      if (it != map.end()) {
+        return &it->first;
+      }
+      return nullptr;
+    }
+
+   private:
+    std::unordered_map<EntityId, DataId> enabledEntityMap_;
+    std::unordered_map<EntityId, DataId> disabledEntityMap_;
+  };
+
   struct Mappings {
-    std::shared_ptr<Pool> ComponentPool;
-    std::unordered_map<EntityId, DataId> EntityMap;
-    std::unordered_map<EntityId, DataId> DisabledEntityMap;
+    std::shared_ptr<async_lib::PoolBase> ComponentPool;
+    EntityMappings EntityMap;
 
     template <typename ComponentType>
-    std::shared_ptr<PoolImpl<ComponentType>> GetPool() {
-      return std::dynamic_pointer_cast<PoolImpl<ComponentType>>(ComponentPool);
+    std::shared_ptr<async_lib::Pool<ComponentType>> GetPool() {
+      return std::static_pointer_cast<async_lib::Pool<ComponentType>>(
+          ComponentPool);
     }
   };
+
+ public:
+  void SetSystemEvents(
+      EventPtr<EntityId, ComponentManager::Handle> const& addEvent,
+      EventPtr<EntityId, ComponentManager::Handle> const& removeEvent) {
+    addEvent_ = addEvent;
+    removeEvent_ = removeEvent;
+  }
 
   template <typename ComponentType>
   inline static TypeId GetTypeId() {
@@ -41,17 +145,24 @@ class ComponentManager {
   }
 
   template <typename ComponentType>
-  Handle Create(EntityId const entityId, ComponentType&& data) {
+  Handle Create(EntityId const entityId, ComponentType&& data,
+                bool const isEnabled = true) {
     Mappings& mappings = GetOrCreateMappings<ComponentType>();
     auto dataId = mappings.GetPool<ComponentType>()->Add(
         std::forward<ComponentType>(data));
 
-    if (mappings.EntityMap.contains(entityId)) {
-      Remove({GetTypeId<ComponentType>(), mappings.EntityMap.at(entityId)});
+    // TODO: need to check DisabledEntityMap
+    if (mappings.EntityMap.Contains(entityId, false)) {
+      Remove({GetTypeId<ComponentType>(),
+              mappings.EntityMap.GetData(entityId, false)});
     }
-    mappings.EntityMap.insert({entityId, dataId});
 
-    return {GetTypeId<ComponentType>(), dataId};
+    mappings.EntityMap.Set(entityId, dataId, isEnabled);
+
+    Handle handle{GetTypeId<ComponentType>(), dataId};
+    if (addEvent_) addEvent_->Notify(entityId, handle);
+
+    return handle;
   }
 
   template <typename ComponentType>
@@ -64,11 +175,12 @@ class ComponentManager {
   }
 
   template <typename ComponentType>
-  std::weak_ptr<ComponentType> GetByEntity(EntityId const entityId) {
+  std::weak_ptr<ComponentType> GetByEntity(EntityId const entityId,
+                                           bool const ignoreDisabled = true) {
     if (PoolExists(GetTypeId<ComponentType>())) {
       Mappings& mappings = GetMappings<ComponentType>();
-      if (mappings.EntityMap.contains(entityId)) {
-        auto dataId = mappings.EntityMap.at(entityId);
+      if (mappings.EntityMap.Contains(entityId, ignoreDisabled)) {
+        auto dataId = mappings.EntityMap.GetData(entityId, ignoreDisabled);
         return mappings.GetPool<ComponentType>()->Get(dataId);
       }
     }
@@ -79,15 +191,12 @@ class ComponentManager {
   void Remove(Handle const& handle) {
     if (PoolExists(handle.Type)) {
       auto& mappings = componentPools_.at(handle.Type);
+      auto entityId = mappings.EntityMap.GetEntity(handle.Data, false);
+
       mappings.ComponentPool->Remove(handle.Data);
+      mappings.EntityMap.Remove(handle.Data);
 
-      std::erase_if(mappings.EntityMap, [&](auto const& item) {
-        return item.second == handle.Data;
-      });
-
-      std::erase_if(mappings.DisabledEntityMap, [&](auto const& item) {
-        return item.second == handle.Data;
-      });
+      if (removeEvent_) removeEvent_->Notify(entityId, handle);
     }
     // TODO: log in else that pool doesn't exist
   }
@@ -95,15 +204,7 @@ class ComponentManager {
   void SetEntityEnabled(EntityId const entityId, bool const isEnabled) {
     // TODO: have to if every iteration, maybe improve
     for (auto& [_, pool] : componentPools_) {
-      if (isEnabled && pool.DisabledEntityMap.contains(entityId)) {
-        auto const dataId = pool.DisabledEntityMap[entityId];
-        pool.DisabledEntityMap.erase(entityId);
-        pool.EntityMap.insert({entityId, dataId});
-      } else if (!isEnabled && pool.EntityMap.contains(entityId)) {
-        auto const dataId = pool.EntityMap[entityId];
-        pool.EntityMap.erase(entityId);
-        pool.DisabledEntityMap.insert({entityId, dataId});
-      }
+      pool.EntityMap.SetIsEnabled(entityId, isEnabled);
     }
   }
 
@@ -119,19 +220,18 @@ class ComponentManager {
   std::unordered_set<EntityId> GetComponentEntities(
       bool const ignoreDisabled) const {
     auto const& mappings = GetMappings<ComponentType>();
+    return mappings.EntityMap.GetAllEntities(ignoreDisabled);
+  }
 
-    std::unordered_set<EntityId> entities;
-    for (auto& [entity, _] : mappings.EntityMap) {
-      entities.insert(entity);
+  void RemoveEntity(std::unordered_map<EntityId, DataId>& entityMap,
+                    Handle const& handle) {
+    auto it = std::find_if(
+        entityMap.begin(), entityMap.end(),
+        [&](auto const& item) { return item.second == handle.Data; });
+    if (it != entityMap.end()) {
+      if (removeEvent_) removeEvent_->Notify(it->first, handle);
+      entityMap.erase(it);
     }
-
-    if (!ignoreDisabled) {
-      for (auto& [entity, _] : mappings.DisabledEntityMap) {
-        entities.insert(entity);
-      }
-    }
-
-    return entities;
   }
 
   template <typename... Sets>
@@ -155,7 +255,8 @@ class ComponentManager {
     if (!componentPools_.contains(typeId)) {
       // TODO: can this ever fail?
       componentPools_.insert(
-          {typeId, Mappings{std::make_shared<PoolImpl<ComponentType>>(), {}}});
+          {typeId,
+           Mappings{std::make_shared<async_lib::Pool<ComponentType>>(), {}}});
     }
 
     return GetMappings(typeId);
@@ -183,4 +284,7 @@ class ComponentManager {
 
  private:
   std::unordered_map<TypeId, Mappings> componentPools_;
+
+  EventPtr<EntityId, Handle> addEvent_;
+  EventPtr<EntityId, Handle> removeEvent_;
 };

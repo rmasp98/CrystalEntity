@@ -4,19 +4,23 @@
 
 class System {
  public:
-  using Id = int32_t;
+  using Id = uint64_t;
 
   virtual ~System() = default;
 
-  virtual void Initialise() = 0;
   virtual void Tick(double const deltaTime) = 0;
+
+  template <typename SystemClass>
+  static System::Id GetId() {
+    return typeid(SystemClass).hash_code();
+  }
 
   Id GetId() const { return systemId_; }
 
  protected:
-  System() : systemId_(systemIdCounter_++) {}
+  System() = default;
 
  private:
-  inline static std::atomic<Id> systemIdCounter_ = 0;
+  friend class Manager;
   Id systemId_;
 };
